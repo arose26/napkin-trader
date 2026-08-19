@@ -211,9 +211,12 @@ def plot():
     for arm in ARMS:
         rs = [json.load(open(f)) for f in
               sorted(glob.glob(os.path.join(OUT, "sweep", f"{arm}_*.json")))]
+        if not rs:
+            continue
         stats[arm] = {k: (ne.iqm([r["test"][k] for r in rs]),
                           *ne.bootstrap_ci([r["test"][k] for r in rs]))
                       for k in ("return_pct", "max_drawdown_pct")}
+    arms_present = [a for a in ARMS if a in stats]
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11.5, 4.4), dpi=150)
     fig.patch.set_facecolor("white")
@@ -227,7 +230,7 @@ def plot():
         ax.grid(color="#e6e5dc", lw=0.6)
         ax.set_axisbelow(True)
 
-    arms = list(ARMS)
+    arms = arms_present
     y = np.arange(len(arms))
     vals = [stats[a]["return_pct"][0] for a in arms]
     err = np.array([[stats[a]["return_pct"][0] - stats[a]["return_pct"][1] for a in arms],
