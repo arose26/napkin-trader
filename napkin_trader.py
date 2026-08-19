@@ -193,6 +193,78 @@ def report():
               f"{cols['sharpe']:>+10.2f} {cols['max_drawdown_pct']:>8.2f}")
 
 
+def plot():
+    import glob
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    market = ne.Market()
+    c = np.exp(np.cumsum(market.logret, 0))
+    bh_curve = (c[market.t_val_end + 1:] / c[market.t_val_end]).mean(1)
+    bh = metrics(bh_curve.tolist())
+
+    C = dict(zip(ARMS, ["#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+                        "#e87ba4", "#008300", "#4a3aa7", "#e34948"]))
+    INK, MUTED = "#1a1a19", "#6f6e64"
+    stats = {}
+    for arm in ARMS:
+        rs = [json.load(open(f)) for f in
+              sorted(glob.glob(os.path.join(OUT, "sweep", f"{arm}_*.json")))]
+        stats[arm] = {k: (ne.iqm([r["test"][k] for r in rs]),
+                          *ne.bootstrap_ci([r["test"][k] for r in rs]))
+                      for k in ("return_pct", "max_drawdown_pct")}
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11.5, 4.4), dpi=150)
+    fig.patch.set_facecolor("white")
+    for ax in (ax1, ax2):
+        ax.set_facecolor("white")
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+        for s in ("left", "bottom"):
+            ax.spines[s].set_color(MUTED)
+        ax.tick_params(colors=MUTED, labelsize=8)
+        ax.grid(color="#e6e5dc", lw=0.6)
+        ax.set_axisbelow(True)
+
+    arms = list(ARMS)
+    y = np.arange(len(arms))
+    vals = [stats[a]["return_pct"][0] for a in arms]
+    err = np.array([[stats[a]["return_pct"][0] - stats[a]["return_pct"][1] for a in arms],
+                    [stats[a]["return_pct"][2] - stats[a]["return_pct"][0] for a in arms]])
+    ax1.barh(y, vals, xerr=err, height=0.62, color=[C[a] for a in arms],
+             error_kw={"ecolor": MUTED, "lw": 1.2})
+    ax1.axvline(bh["return_pct"], color=MUTED, lw=1.4, ls="--")
+    ax1.annotate(f' B&H {bh["return_pct"]:+.1f}%', (bh["return_pct"], len(arms) - 0.6),
+                 color=MUTED, fontsize=8, fontweight="bold")
+    ax1.set_yticks(y, arms)
+    ax1.invert_yaxis()
+    ax1.set_title("Test return IQM + 95% CI (10 seeds/arm)", color=INK, fontsize=10, loc="left")
+    ax1.set_xlabel("test return %", color=MUTED, fontsize=8)
+
+    for i, a in enumerate(arms):
+        r, rlo, rhi = stats[a]["return_pct"]
+        m, mlo, mhi = stats[a]["max_drawdown_pct"]
+        ax2.errorbar(m, r, xerr=[[m - mlo], [mhi - m]], yerr=[[r - rlo], [rhi - r]],
+                     fmt="o", color=C[a], ecolor="#c9c8bd", elinewidth=1, ms=7)
+        dx, ha = (6, "left") if i % 2 == 0 else (-6, "right")
+        ax2.annotate(a, (m, r), color=C[a], fontsize=8, fontweight="bold",
+                     xytext=(dx, 5 + 3 * (i % 3)), textcoords="offset points", ha=ha)
+    ax2.plot(bh["max_drawdown_pct"], bh["return_pct"], "s", color=MUTED, ms=8)
+    ax2.annotate(" buy&hold", (bh["max_drawdown_pct"], bh["return_pct"]),
+                 color=MUTED, fontsize=8, fontweight="bold")
+    ax2.set_title("The risk plane: max drawdown vs return (test IQMs)",
+                  color=INK, fontsize=10, loc="left")
+    ax2.set_xlabel("max drawdown % (right = shallower)", color=MUTED, fontsize=8)
+    ax2.set_ylabel("test return %", color=MUTED, fontsize=8)
+
+    fig.tight_layout()
+    os.makedirs(os.path.join(HERE, "assets"), exist_ok=True)
+    out = os.path.join(HERE, "assets", "hero.png")
+    fig.savefig(out, bbox_inches="tight")
+    print("wrote", out)
+
+
 def selfcheck():
     market = ne.Market()
     feat = torch.tensor(ne.build_features(market, OBS_ARM), device=DEV)
@@ -275,4 +347,4 @@ if __name__ == "__main__":
     if cmd == "sweep":
         sweep([a for a in sys.argv[2:] if a in ARMS] or None)
     else:
-        {"selfcheck": selfcheck, "report": report}[cmd]()
+        {"selfcheck": selfcheck, "report": report, "plot": plot}[cmd]()

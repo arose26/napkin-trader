@@ -68,7 +68,51 @@ arms' claim is about the risk columns, not the return column.
 
 ## Results
 
-*(to be filled after the sweep — predictions above are frozen first)*
+Ran 2026-08-19 on a Colab T4 (80 runs). Test window 2026-06-01 → 2026-08-18;
+same-window buy-and-hold: −0.27% return, −7.66% max drawdown.
+
+![results](assets/hero.png)
+
+| arm | return IQM [95% CI] | Sharpe IQM | MDD IQM [95% CI] |
+|---|---|---|---|
+| base | +1.02 [−0.79, +2.76] | +0.65 | −3.84 [−4.92, −2.83] |
+| dd | −0.83 [−2.42, +0.57] | −0.60 | −3.68 [−4.29, −3.05] |
+| sharpe | +0.60 [−2.41, +2.45] | +0.39 | −3.70 [−5.04, −2.86] |
+| long2 | +0.53 [−0.53, +2.00] | +0.27 | −3.49 [−4.08, −3.08] |
+| size5 | −0.93 [−2.98, +1.26] | −0.49 | −4.26 [−5.45, −3.06] |
+| ratio.25 | +0.84 [−1.41, +3.10] | +0.47 | −3.99 [−6.12, −2.75] |
+| ratio4 | +1.37 [−2.04, +4.06] | +0.77 | −3.39 [−5.23, −2.22] |
+| ratio8 | +0.85 [−2.26, +3.14] | +0.47 | −4.23 [−6.16, −3.07] |
+
+Verdicts on the frozen hypotheses:
+
+1. **Reuse ladder — ordering consistent with the registered prediction; not
+   confirmation.** ratio4 (+1.37) > base (+1.02) > ratio.25 (+0.84), ratio8 (+0.85)
+   below ratio4 — all three registered inequalities hold on point estimates (a
+   ~1-in-10 coincidence under pure noise, for what little that's worth), but every CI
+   overlaps: statistically these are indistinguishable. Unlike MinAtar (where `online`
+   vs `full` was 5-vs-12, unmissable), in-domain the ratio knob moves less than seed
+   noise. The binding constraint here is 54 noisy test bars, not learning capacity.
+2. **Shaping — no measurable effect at the tested coefficients.** This was the one
+   comparison predicted to escape the tie zone, and it didn't: `dd` (λ=2) cut max
+   drawdown by a statistically invisible 0.16 pp vs `base` while losing return on point
+   estimate; the `sharpe` arm's (κ=10) Sharpe metric came out *below* `base`'s. This
+   does not prove shaping can't work (one coefficient setting each, all CIs overlap) —
+   but it removes the evidential basis for building repo 5's flagship on a shaped
+   reward. Decision under uncertainty: the flagship gets a *structural* risk story
+   instead (`long2`, or `base` at reduced position size), and shaping is shelved unless
+   new evidence appears.
+3. **Action space — confirmed ties**, directions as predicted: `long2` shows the
+   shallowest drawdowns (−3.49) as expected from a policy that can't be short in a
+   rally; `size5` ties while spending capacity on a second-order decision.
+4. **Honest null — confirmed a third time.** Every return CI contains 0 and
+   buy-and-hold.
+
+**The un-registered finding worth keeping** (reported with its caveat): every DQN arm
+sits at roughly *half* of buy-and-hold's max drawdown (−3.4 to −4.3 vs −7.66) at similar
+return — but agents are only partially invested at any moment, and a 50%-cash B&H would
+also halve drawdown. The right comparison is exposure-matched, which the sim logs make
+possible — queued as a repo 5 analysis, not claimed here.
 
 ## Run it
 
