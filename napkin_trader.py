@@ -64,7 +64,7 @@ def shape_reward(reward_kind, log_r, eq, peak):
     raise SystemExit(reward_kind)
 
 
-def train(arm, seed, market, feat, quiet=True, vec_steps=VEC_STEPS):
+def train(arm, seed, market, feat, quiet=True, vec_steps=VEC_STEPS, train_end=None):
     reward_kind, aset, ratio = ARMS[arm]
     acts = torch.tensor(ACTION_SETS[aset], device=DEV)
     nA = len(acts)
@@ -79,8 +79,8 @@ def train(arm, seed, market, feat, quiet=True, vec_steps=VEC_STEPS):
 
     def reset():
         s = torch.randint(0, market.S, (N_ENVS,), generator=g).to(DEV)
-        t = torch.randint(61, market.t_train_end - EP_LEN - NSTEP,
-                          (N_ENVS,), generator=g).to(DEV)
+        hi = (train_end if train_end is not None else market.t_train_end)
+        t = ne.sample_starts(market, s, 61, hi, g)
         return (s, t, torch.zeros(N_ENVS, device=DEV),
                 torch.ones(N_ENVS, device=DEV), torch.ones(N_ENVS, device=DEV))
 
@@ -133,6 +133,12 @@ def evaluate(net, acts, market, feat, t0, t1):
     """Greedy rollout per symbol; returns (portfolio_curve, positions [T,S])."""
     net.eval()
     S = market.S
+    # Under align="ragged" an early window can contain symbols that had not
+    # listed yet; averaging over them would quietly mix real and absent series,
+    # so refuse instead. Every window this repo evaluates is recent and passes.
+    assert bool(market.valid[t0:t1].all()), (
+        "evaluation window contains symbols with no data; "
+        "pick a window after every symbol's first bar")
     sym = torch.arange(S, device=DEV)
     pos = torch.zeros(S, device=DEV)
     eq = torch.ones(S, device=DEV)
@@ -179,8 +185,98 @@ def sweep(arms=None, seeds=SEEDS):
     report()
 
 
+# --------------------------------------------------- walk-forward (many windows)
+# One 55-bar test window cannot tell a real edge from a lucky quarter, and the
+# sweep's window has now been consulted by three separate sweeps. This splits
+# the tail of the tape into consecutive, NON-OVERLAPPING test windows, each
+# trained only on the bars before it, and reports the arms' PAIRED difference
+# per window -- the comparison a single-window "CI excludes 0" never makes.
+
+WF_FOLDS, WF_ARMS = 4, ("base", "long2")
+
+
+def wf_windows(T, folds=WF_FOLDS, win=None):
+    """[(train_end, test_start, test_end)] -- contiguous, non-overlapping,
+    expanding training, last window ending at the tape's end."""
+    win = win or 55
+    return [(T - (folds - k) * win, T - (folds - k) * win, T - (folds - k - 1) * win)
+            for k in range(folds)]
+
+
+def walkforward(folds=WF_FOLDS, arms=WF_ARMS, seeds=SEEDS, win=None):
+    d = os.path.join(OUT, "walkforward")
+    os.makedirs(d, exist_ok=True)
+    market = ne.Market()
+    feat = torch.tensor(ne.build_features(market, OBS_ARM), device=DEV)
+    wins = wf_windows(market.T, folds, win)
+    print(f"tape {market.T} bars; folds: "
+          + ", ".join(f"train<{a} test[{b},{c})" for a, b, c in wins), flush=True)
+    for k, (tr_end, t0, t1) in enumerate(wins):
+        for arm in arms:
+            for seed in range(seeds):
+                f = os.path.join(d, f"{arm}_{k}_{seed}.json")
+                if os.path.exists(f):
+                    continue
+                t_start = time.time()
+                net, acts = train(arm, seed, market, feat, train_end=tr_end)
+                curve, _ = evaluate(net, acts, market, feat, t0, t1)
+                rec = {"arm": arm, "fold": k, "seed": seed, "train_end": tr_end,
+                       "test": [t0, t1], "dates": [market.dates[t0], market.dates[t1 - 1]],
+                       "metrics": metrics(curve)}
+                json.dump(rec, open(f, "w"))
+                print(f"  fold {k} {arm:6} seed {seed}: "
+                      f"{rec['metrics']['return_pct']:+.2f}% "
+                      f"({time.time() - t_start:.0f}s)", flush=True)
+    report_wf()
+
+
+def report_wf():
+    import glob
+    runs = {}
+    for f in glob.glob(os.path.join(OUT, "walkforward", "*.json")):
+        r = json.load(open(f))
+        runs.setdefault((r["arm"], r["fold"]), []).append(r)
+    arms = sorted({k[0] for k in runs})
+    # Only folds every arm has finished are comparable; an interrupted sweep
+    # otherwise KeyErrors here (or, worse, reports a fold for one arm only).
+    all_folds = sorted({k[1] for k in runs})
+    folds = [k for k in all_folds if all((a, k) in runs for a in arms)]
+    if len(folds) < len(all_folds):
+        print(f"skipping {sorted(set(all_folds) - set(folds))}: not all arms finished")
+    out = {"folds": {}, "arms": arms}
+    print(f"\n{'fold':6}{'window':26}" + "".join(f"{a:>22}" for a in arms)
+          + f"{'paired diff':>22}")
+    for k in folds:
+        row, means = "", {}
+        any_r = next(iter(runs[(arms[0], k)]))
+        for a in arms:
+            rs = sorted(runs[(a, k)], key=lambda r: r["seed"])
+            v = [r["metrics"]["return_pct"] for r in rs]
+            means[a] = v
+            lo, hi = ne.bootstrap_ci(np.array(v))
+            row += f"{ne.iqm(v):>+9.2f} [{lo:+.2f},{hi:+.2f}]".rjust(22)
+        diff = None
+        if len(arms) == 2:
+            pair = [b - a for a, b in zip(means[arms[0]], means[arms[1]])]
+            diff = ne.iqm(pair)
+            lo, hi = ne.bootstrap_ci(np.array(pair))
+            row += f"{diff:>+9.2f} [{lo:+.2f},{hi:+.2f}]".rjust(22)
+        w = f"{any_r['dates'][0]}..{any_r['dates'][1]}"
+        print(f"{k:<6}{w:26}{row}")
+        out["folds"][k] = {"window": any_r["dates"], "arms": means, "paired_diff_iqm": diff}
+    if len(arms) == 2:
+        wins = sum(1 for k in folds
+                   if ne.iqm([b - a for a, b in zip(out["folds"][k]["arms"][arms[0]],
+                                                 out["folds"][k]["arms"][arms[1]])]) > 0)
+        print(f"\n{arms[1]} beats {arms[0]} in {wins}/{len(folds)} independent windows")
+        out["windows_won"] = [wins, len(folds)]
+    json.dump(out, open(os.path.join(OUT, "walkforward.json"), "w"), indent=1)
+    print(f"wrote {os.path.join(OUT, 'walkforward.json')}")
+
+
 def report():
     import glob
+    out = {}
     print(f"\n{'arm':9} {'n':>2} {'ret IQM':>8} {'sharpe IQM':>10} {'MDD IQM':>8}")
     for arm in ARMS:
         rs = [json.load(open(f)) for f in
@@ -191,6 +287,18 @@ def report():
                 for k in ("return_pct", "sharpe", "max_drawdown_pct")}
         print(f"{arm:9} {len(rs):>2} {cols['return_pct']:>+8.2f} "
               f"{cols['sharpe']:>+10.2f} {cols['max_drawdown_pct']:>8.2f}")
+        out[arm] = {"n": len(rs), "iqm": cols,
+                    "ci_return_pct": [float(v) for v in
+                                      ne.bootstrap_ci(np.array([r["test"]["return_pct"]
+                                                             for r in rs]))],
+                    "seeds": {r["seed"]: r["test"] for r in rs}}
+    # The README quotes this table, so it ships as a committed file rather than
+    # living only in gitignored out/ (house rule: every number has a source).
+    a = os.path.join(HERE, "assets", "sweep_results.json")
+    market_note = {"align": "intersect", "note": "single 55-bar test window; "
+                   "see walkforward.json for the multi-window version"}
+    json.dump({"arms": out, "eval": market_note}, open(a, "w"), indent=1)
+    print(f"wrote {a}")
 
 
 def plot():
@@ -269,6 +377,35 @@ def plot():
 
 
 def selfcheck():
+    # walk-forward folds must not leak: each fold trains strictly before its own
+    # test window, windows are contiguous, non-overlapping, and end at the tape.
+    T, win = 1298, 55
+    ws = wf_windows(T, folds=4, win=win)
+    assert ws[-1][2] == T, ws
+    for tr_end, t0, t1 in ws:
+        assert tr_end <= t0, ("train window overlaps test", tr_end, t0)
+        assert t1 - t0 == win, (t0, t1)
+    for (_, _, prev_end), (_, nxt_start, _) in zip(ws, ws[1:]):
+        assert prev_end == nxt_start, ("folds not contiguous", prev_end, nxt_start)
+    assert len({w[1] for w in ws}) == len(ws), "test windows repeat"
+    print(f"selfcheck: {len(ws)} walk-forward folds, no leakage, contiguous")
+
+    # The fold boundaries being clean is necessary but not sufficient: an
+    # episode starts at t and then ADVANCES, so the reachable bar is
+    # start + EP_LEN (+ NSTEP of bootstrap lookahead). Assert the sampler's
+    # worst case still lands strictly before the fold's test window -- this is
+    # the invariant that keeps walk-forward out-of-sample.
+    mk = ne.Market()
+    g = torch.Generator(device="cpu").manual_seed(0)
+    for tr_end, t0, _ in ws[:1] + ws[-1:]:
+        sym = torch.randint(0, mk.S, (8192,), generator=g).to(DEV)
+        st = ne.sample_starts(mk, sym, 61, tr_end, g)
+        assert int(st.max()) + EP_LEN + NSTEP <= tr_end <= t0, (
+            "training episode can reach into the test window",
+            int(st.max()), EP_LEN, NSTEP, tr_end, t0)
+    print(f"selfcheck: episode reach (start+{EP_LEN}+{NSTEP}) stays before "
+          "every fold's test window")
+
     market = ne.Market()
     feat = torch.tensor(ne.build_features(market, OBS_ARM), device=DEV)
 
@@ -349,5 +486,8 @@ if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "selfcheck"
     if cmd == "sweep":
         sweep([a for a in sys.argv[2:] if a in ARMS] or None)
+    elif cmd == "walkforward":
+        walkforward(arms=[a for a in sys.argv[2:] if a in ARMS] or WF_ARMS)
     else:
-        {"selfcheck": selfcheck, "report": report, "plot": plot}[cmd]()
+        {"selfcheck": selfcheck, "report": report, "plot": plot,
+         "reportwf": report_wf}[cmd]()
