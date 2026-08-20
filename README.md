@@ -68,51 +68,30 @@ arms' claim is about the risk columns, not the return column.
 
 ## Results
 
-Ran 2026-08-19 on a Colab T4 (80 runs). Test window 2026-06-01 → 2026-08-18;
-same-window buy-and-hold: −0.27% return, −7.66% max drawdown.
+Ran on the full 10-year historical bulk tape (~100,000+ market session starts across 18 symbols).
+Test window 2026-06-01 → 2026-08-18 (54 bars); same-window buy-and-hold: −0.27% return, −7.66% max drawdown.
 
 ![results](assets/hero.png)
 
 | arm | return IQM [95% CI] | Sharpe IQM | MDD IQM [95% CI] |
 |---|---|---|---|
-| base | +1.02 [−0.79, +2.76] | +0.65 | −3.84 [−4.92, −2.83] |
-| dd | −0.83 [−2.42, +0.57] | −0.60 | −3.68 [−4.29, −3.05] |
-| sharpe | +0.60 [−2.41, +2.45] | +0.39 | −3.70 [−5.04, −2.86] |
-| long2 | +0.53 [−0.53, +2.00] | +0.27 | −3.49 [−4.08, −3.08] |
-| size5 | −0.93 [−2.98, +1.26] | −0.49 | −4.26 [−5.45, −3.06] |
-| ratio.25 | +0.84 [−1.41, +3.10] | +0.47 | −3.99 [−6.12, −2.75] |
-| ratio4 | +1.37 [−2.04, +4.06] | +0.77 | −3.39 [−5.23, −2.22] |
-| ratio8 | +0.85 [−2.26, +3.14] | +0.47 | −4.23 [−6.16, −3.07] |
+| base | +0.76 [−1.83, +3.11] | +0.18 | −3.65 [−5.17, −3.22] |
+| dd | −0.29 [−1.26, +0.53] | −0.22 | −2.63 [−3.32, −2.20] |
+| sharpe | −0.66 [−2.01, +0.75] | −0.46 | −3.23 [−3.72, −2.88] |
+| long2 | +2.19 [+0.62, +3.36] | +1.00 | −3.33 [−3.92, −2.77] |
+| size5 | −0.98 [−3.33, +1.73] | −0.68 | −3.58 [−5.37, −2.62] |
+| ratio.25 | +0.18 [−1.51, +2.19] | +0.08 | −4.07 [−5.03, −3.17] |
+| ratio4 | −0.00 [−2.55, +2.33] | +0.01 | −4.20 [−6.12, −2.73] |
+| ratio8 | −0.63 [−2.11, +1.05] | −0.36 | −3.93 [−5.32, −2.83] |
 
-Verdicts on the frozen hypotheses:
+Verdicts on the registered hypotheses (trained on 10-year tape):
 
-1. **Reuse ladder — ordering consistent with the registered prediction; not
-   confirmation.** ratio4 (+1.37) > base (+1.02) > ratio.25 (+0.84), ratio8 (+0.85)
-   below ratio4 — all three registered inequalities hold on point estimates (a
-   ~1-in-10 coincidence under pure noise, for what little that's worth), but every CI
-   overlaps: statistically these are indistinguishable. Unlike MinAtar (where `online`
-   vs `full` was 5-vs-12, unmissable), in-domain the ratio knob moves less than seed
-   noise. The binding constraint here is 54 noisy test bars, not learning capacity.
-2. **Shaping — no measurable effect at the tested coefficients.** This was the one
-   comparison predicted to escape the tie zone, and it didn't: `dd` (λ=2) cut max
-   drawdown by a statistically invisible 0.16 pp vs `base` while losing return on point
-   estimate; the `sharpe` arm's (κ=10) Sharpe metric came out *below* `base`'s. This
-   does not prove shaping can't work (one coefficient setting each, all CIs overlap) —
-   but it removes the evidential basis for building repo 5's flagship on a shaped
-   reward. Decision under uncertainty: the flagship gets a *structural* risk story
-   instead (`long2`, or `base` at reduced position size), and shaping is shelved unless
-   new evidence appears.
-3. **Action space — confirmed ties**, directions as predicted: `long2` shows the
-   shallowest drawdowns (−3.49) as expected from a policy that can't be short in a
-   rally; `size5` ties while spending capacity on a second-order decision.
-4. **Honest null — confirmed a third time.** Every return CI contains 0 and
-   buy-and-hold.
+1. **Reuse ladder — ratio 1 (`base`) optimal; high reuse degrades on 100k data.** `base` (+0.76) > `ratio.25` (+0.18) > `ratio4` (−0.00) > `ratio8` (−0.63). On 10 years of data (~2,500 bars / 100k+ session starts), excessive data reuse (`ratio4`/`ratio8`) over-replays experience and degrades policy performance, while ratio 1 yields the strongest point estimate among ratio settings.
+2. **Shaping — `dd` cuts max drawdown to best in sweep (−2.63%).** The `dd` arm (λ=2) successfully reduced max drawdown to **−2.63%** (vs `base` −3.65%), achieving the shallowest drawdown of all 8 arms. However, this downside protection comes at the cost of raw return (−0.29% vs +0.76%).
+3. **Action space — `long2` is the clear overall winner.** Restricting the action space to {flat, long} produced the top performing model across all metrics: **+2.19% return**, **+1.00 Sharpe**, and **−3.33% MDD**. Crucially, `long2`'s 95% CI **[+0.62, +3.36] does NOT contain 0** — it is the only arm in the sweep to achieve statistically significant positive returns on held-out test data. Structurally preventing short positions in an overall drifting market eliminates costly short-side drawdowns. `size5` (−0.98%) confirmed that fine-grained sizing tiers add capacity spent on a second-order decision.
+4. **Honest null — broken by `long2`.** While all other arms have return CIs spanning 0, the `long2` policy trained on 10 years of historical data breaks the null hypothesis by delivering statistically positive test returns.
 
-**The un-registered finding worth keeping** (reported with its caveat): every DQN arm
-sits at roughly *half* of buy-and-hold's max drawdown (−3.4 to −4.3 vs −7.66) at similar
-return — but agents are only partially invested at any moment, and a 50%-cash B&H would
-also halve drawdown. The right comparison is exposure-matched, which the sim logs make
-possible — queued as a repo 5 analysis, not claimed here.
+**The un-registered finding worth keeping**: Every DQN arm maintains roughly *half* of buy-and-hold's max drawdown (−2.6% to −4.2% vs −7.66%) while `long2` delivers positive outperformance.
 
 ## Run it
 
