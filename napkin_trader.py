@@ -390,21 +390,26 @@ def selfcheck():
     assert len({w[1] for w in ws}) == len(ws), "test windows repeat"
     print(f"selfcheck: {len(ws)} walk-forward folds, no leakage, contiguous")
 
-    # The fold boundaries being clean is necessary but not sufficient: an
-    # episode starts at t and then ADVANCES, so the reachable bar is
-    # start + EP_LEN (+ NSTEP of bootstrap lookahead). Assert the sampler's
-    # worst case still lands strictly before the fold's test window -- this is
-    # the invariant that keeps walk-forward out-of-sample.
+    # The fold boundaries being clean is necessary but not sufficient. train_end
+    # is an EXCLUSIVE bound (training uses bars < train_end, test starts at it),
+    # but an episode starts at t and then ADVANCES: after EP_LEN steps it reads
+    # bar start+EP_LEN, and step_factor(t) consumes bar t+1 because gap[t] pairs
+    # open[t+1] with close[t]. So the bar actually consumed at worst is
+    # start + EP_LEN, and THAT is what must land strictly before the test
+    # window. The sampler's cap (train_end - EP_LEN - NSTEP) leaves NSTEP bars
+    # of margin; assert the margin rather than trusting the naming.
     mk = ne.Market()
     g = torch.Generator(device="cpu").manual_seed(0)
     for tr_end, t0, _ in ws[:1] + ws[-1:]:
         sym = torch.randint(0, mk.S, (8192,), generator=g).to(DEV)
         st = ne.sample_starts(mk, sym, 61, tr_end, g)
-        assert int(st.max()) + EP_LEN + NSTEP <= tr_end <= t0, (
-            "training episode can reach into the test window",
-            int(st.max()), EP_LEN, NSTEP, tr_end, t0)
-    print(f"selfcheck: episode reach (start+{EP_LEN}+{NSTEP}) stays before "
-          "every fold's test window")
+        reach = int(st.max()) + EP_LEN          # last bar a training step reads
+        assert reach < t0, ("training episode reads into the test window",
+                            reach, t0)
+        assert t0 - reach >= NSTEP, ("margin thinner than the bootstrap horizon",
+                                     t0 - reach, NSTEP)
+    print(f"selfcheck: worst-case training reach is {NSTEP}+ bars clear of "
+          "every fold's test window (start+EP_LEN, gap[t] consumes bar t+1)")
 
     market = ne.Market()
     feat = torch.tensor(ne.build_features(market, OBS_ARM), device=DEV)
